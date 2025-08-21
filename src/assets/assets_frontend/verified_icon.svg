@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 256 256">
+  <defs>
+    <!-- Mask: show the circle, cut out the check so it stays transparent -->
+    <mask id="cut">
+      <rect width="256" height="256" fill="black"/>
+      <circle cx="128" cy="128" r="96" fill="white"/>
+      <path d="M84 132 L116 164 L184 96" fill="none" stroke="black" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+  <!-- The final white shape (transparent background) -->
+  <rect width="256" height="256" fill="white" mask="url(#cut)"/>
+</svg>
