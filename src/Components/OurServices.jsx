@@ -25,7 +25,7 @@ const ServicesSection = () => {
             className="bg-primary rounded-2xl shadow-md hover:shadow-xl p-6 flex flex-col items-center transition-all transform hover:scale-105"
           >
             <img src={service.icon} alt={service.title} className="w-16 h-16 mb-4" />
-            <h3 className="text-lg font-semibold text-gray-800">{service.title}</h3>
+            <h3 className="text-lg font-semibold text-white">{service.title}</h3>
             <p className="text-sm text-white mt-2 flex-grow pb-2">{service.desc}</p>
 
             {service.active ? (
