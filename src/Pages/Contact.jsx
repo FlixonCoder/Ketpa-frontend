@@ -353,9 +353,11 @@ export default function ContactPage() {
                 title="Headquarters"
                 subtitle={
                   <>
-                    Koramangala, Bangalore
+                    Prestige White Meadows
                     <br />
-                    Karnataka 560034, India
+                    Whitefield main Road, Whitefield 
+                    <br />
+                    Bangalore-560066
                   </>
                 }
               />
@@ -379,7 +381,7 @@ export default function ContactPage() {
                 <div className="h-56 w-full">
                   <iframe
                     title="Ketpa HQ Map"
-                    src="https://www.google.com/maps?q=Koramangala%2C%20Bengaluru&output=embed"
+                    src="https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d3887.9555400424892!2d77.74827437590211!3d12.974695514808776!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x3bae0e075e402bb3%3A0xd81374e18fa7a9a7!2sPrestige%20White%20Meadows!5e0!3m2!1sen!2sin!4v1755932535090!5m2!1sen!2sin"
                     width="100%"
                     height="100%"
                     loading="lazy"
