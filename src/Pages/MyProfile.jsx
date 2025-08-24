@@ -1,6 +1,6 @@
 import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
-import { toast } from "react-toastify"; // Ensure <Toaster /> is mounted in your app root
+import { toast } from "react-toastify";
 import { AppContext } from "../Context/AppContext";
 import { assets } from "../assets/assets_frontend/assets";
 
@@ -20,6 +20,7 @@ const normalizeUserData = (u = {}) => ({
   dob: u.dob ?? "",
   pet: u.pet ?? "",
   aboutPet: u.aboutPet ?? "",
+  isVerified: u.isVerified ?? false,
 });
 
 export default function MyProfile() {
@@ -36,10 +37,96 @@ export default function MyProfile() {
   const [image, setImage] = useState(false);
   const previewUrlRef = useRef(null);
 
+  // Email verification states
+  const [verifyOpen, setVerifyOpen] = useState(false);
+  const [otp, setOtp] = useState("");
+  const [sendingOtp, setSendingOtp] = useState(false);
+  const [verifyingOtp, setVerifyingOtp] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
+
+  // Derived states
+  const loading = !userData || Object.keys(userData || {}).length === 0;
+
+  const errors = useMemo(() => {
+    if (!isEdit) return {};
+    const e = {};
+    if ((draft.name || "").trim().length < 2) e.name = "Name must be at least 2 characters.";
+    if (draft.phone && !/^\+?[0-9 ()-]{7,}$/.test(draft.phone)) e.phone = "Enter a valid phone number.";
+    if (draft.dob) {
+      const today = new Date();
+      const dob = new Date(draft.dob);
+      if (dob > today) e.dob = "Birth date cannot be in the future.";
+    }
+    return e;
+  }, [draft, isEdit]);
+
+  const hasChanges = useMemo(() => {
+    const a = safeUser;
+    const b = draft;
+    return (
+      a.name !== b.name ||
+      a.phone !== b.phone ||
+      a.gender !== b.gender ||
+      a.dob !== b.dob ||
+      a.aboutPet !== b.aboutPet ||
+      a.address?.line1 !== b.address?.line1 ||
+      a.address?.line2 !== b.address?.line2 ||
+      !!image
+    );
+  }, [safeUser, draft, image]);
+
+  const completion = useMemo(() => {
+    const fields = [
+      !!safeUser.name,
+      !!safeUser.phone,
+      !!safeUser.address?.line1,
+      !!safeUser.address?.line2,
+      !!safeUser.gender,
+      !!safeUser.dob,
+      !!safeUser.aboutPet,
+    ];
+    const filled = fields.filter(Boolean).length;
+    return Math.round((filled / fields.length) * 100);
+  }, [safeUser]);
+
   // Keep draft in sync with userData when not editing
   useEffect(() => {
     if (!isEdit) setDraft(safeUser);
   }, [safeUser, isEdit]);
+
+  // OTP cooldown timer
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const id = setInterval(() => setResendCooldown((c) => c - 1), 1000);
+    return () => clearInterval(id);
+  }, [resendCooldown]);
+
+  // Prompt on unsaved changes and keyboard shortcut
+  useEffect(() => {
+    const beforeUnload = (e) => {
+      if (isEdit && hasChanges) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    const onKeyDown = (e) => {
+      if (isEdit && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        if (!saving && hasChanges && Object.keys(errors).length === 0) {
+          handleSave();
+        }
+      }
+    };
+    if (isEdit && hasChanges) {
+      window.addEventListener("beforeunload", beforeUnload);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("beforeunload", beforeUnload);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEdit, hasChanges, saving, errors]);
 
   // Cleanup preview blob URL on unmount
   useEffect(() => {
@@ -52,7 +139,7 @@ export default function MyProfile() {
   }, []);
 
   const inputBase =
-    "w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm text-gray-900 placeholder:text-gray-500 focus:border-[#545FF1] focus:ring-2 focus:ring-[#545FF1]/30 outline-none";
+    "w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm text-gray-900 placeholder:text-gray-500 focus:border-[#545FF1] focus:ring-2 focus:ring-[#545FF1]/30 disabled:cursor-not-allowed disabled:bg-gray-50 outline-none transition";
 
   const startEdit = () => {
     setDraft(safeUser);
@@ -61,6 +148,10 @@ export default function MyProfile() {
   };
 
   const cancelEdit = () => {
+    if (hasChanges) {
+      const ok = window.confirm("Discard your changes?");
+      if (!ok) return;
+    }
     setDraft(safeUser);
     setIsEdit(false);
     if (previewUrlRef.current) {
@@ -73,6 +164,10 @@ export default function MyProfile() {
   const handleAvatar = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please select an image file");
+      return;
+    }
     // Revoke any previous preview URL
     if (previewUrlRef.current) {
       URL.revokeObjectURL(previewUrlRef.current);
@@ -80,8 +175,8 @@ export default function MyProfile() {
     }
     const url = URL.createObjectURL(file);
     previewUrlRef.current = url;
-    setImage(file); // store the file for upload
-    setDraft((prev) => ({ ...prev, image: url })); // show preview
+    setImage(file);
+    setDraft((prev) => ({ ...prev, image: url }));
   };
 
   // Use draft to build the payload, not userData (to avoid stale context reads)
@@ -104,11 +199,9 @@ export default function MyProfile() {
 
       if (data.success) {
         toast.success(data.message || "Profile updated");
-        // Optimistic update (optional): reflect changes immediately
         setUserData((prev) => ({
           ...(prev || {}),
           ...draft,
-          // If backend returns a new image URL, loadUserProfileData will override this
         }));
         await loadUserProfileData();
         setIsEdit(false);
@@ -130,21 +223,122 @@ export default function MyProfile() {
 
   const handleSave = async () => {
     if (saving) return;
+    if (Object.keys(errors).length > 0) {
+      toast.error("Please fix the highlighted fields");
+      return;
+    }
+    if (!hasChanges) {
+      toast.info("No changes to save");
+      return;
+    }
     setSaving(true);
     await updateUserProfileData();
   };
 
+  const canSave = isEdit && hasChanges && Object.keys(errors).length === 0 && !saving;
+
+  // Email verification handlers
+  const sendVerificationOtp = async () => {
+    if (!safeUser.email) {
+      toast.error("No email found on your profile");
+      return;
+    }
+    try {
+      setSendingOtp(true);
+      const { data } = await axios.post(
+        `${backendUrl}/api/user/resend-otp`,
+        { email: safeUser.email },
+        { headers: { token } }
+      );
+      if (data?.success) {
+        toast.success("OTP sent to your email");
+        setResendCooldown(30);
+        setVerifyOpen(true);
+      } else {
+        toast.error(data?.message || "Failed to send OTP");
+      }
+    } catch (error) {
+      toast.error(error?.response?.data?.message || "Failed to send OTP");
+    } finally {
+      setSendingOtp(false);
+    }
+  };
+
+  const verifyEmailOtp = async () => {
+    if ((otp || "").length !== 6) {
+      toast.error("Enter the 6-digit OTP");
+      return;
+    }
+    try {
+      setVerifyingOtp(true);
+      const { data } = await axios.post(
+        `${backendUrl}/api/user/verify-otp`,
+        { email: safeUser.email, otp },
+        { headers: { token } }
+      );
+      if (data?.success) {
+        toast.success("Email verified successfully!");
+        setUserData((prev) => ({ ...(prev || {}), isVerified: true }));
+        await loadUserProfileData();
+        setVerifyOpen(false);
+        setOtp("");
+      } else {
+        toast.error(data?.message || "Verification failed");
+      }
+    } catch (error) {
+      toast.error(error?.response?.data?.message || error.message || "Verification failed");
+    } finally {
+      setVerifyingOtp(false);
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-white text-gray-900">
+    <div className="min-h-screen bg-white text-gray-900" style={{ "--brand": BRAND }}>
       {/* Themed hero header */}
       <section
-        className="relative isolate bg-cover bg-center rounded-lg"
+        className="relative isolate bg-cover bg-center rounded-b-2xl"
         style={{ backgroundImage: `url(${assets.hero_bg})` }}
       >
-        <div className="absolute inset-0 bg-gradient-to-b rounded-lg from-black/60 via-black/40 to-black/20" />
+        <div className="absolute inset-0 bg-gradient-to-b from-black/60 via-black/40 to-black/20" />
         <div className="relative mx-auto max-w-6xl px-6 py-10 text-white">
-          <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">My Profile</h1>
-          <p className="mt-1 text-white/90">Manage your info and preferences</p>
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">My Profile</h1>
+              <p className="mt-1 text-white/90">Manage your info and preferences</p>
+            </div>
+            {isEdit && (
+              <div className="hidden gap-3 sm:flex">
+                <button
+                  onClick={cancelEdit}
+                  className="rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-sm font-semibold text-white backdrop-blur transition hover:bg-white/20"
+                  disabled={saving}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSave}
+                  disabled={!canSave}
+                  className={`rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm transition ${
+                    canSave
+                      ? "bg-[var(--brand)] hover:-translate-y-0.5 hover:shadow-md"
+                      : "bg-white/30 cursor-not-allowed"
+                  }`}
+                >
+                  {saving ? (
+                    <span className="inline-flex items-center gap-2">
+                      <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+                      </svg>
+                      Saving...
+                    </span>
+                  ) : (
+                    "Save"
+                  )}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </section>
 
@@ -153,21 +347,27 @@ export default function MyProfile() {
         <div className="grid gap-6 lg:grid-cols-12">
           {/* Left: Profile card */}
           <aside className="lg:col-span-4">
-            <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+            <div className="lg:sticky lg:top-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+              {/* Avatar + name */}
               <div className="flex items-center gap-4">
                 <div className="relative h-28 w-28">
                   <img
                     src={isEdit ? draft.image : safeUser.image}
-                    alt="Profile"
+                    alt="Profile avatar"
                     className="h-28 w-28 rounded-full border border-gray-200 object-cover ring-4 ring-white"
                   />
                   {isEdit && (
                     <>
                       <label
                         htmlFor="avatar"
-                        className="absolute bottom-1 left-1/2 -translate-x-1/2 cursor-pointer rounded-full bg-white/90 px-3 py-1 text-xs font-semibold text-[#545FF1] shadow ring-1 ring-inset ring-[#545FF1]/20 hover:bg-white"
+                        title="Change photo"
+                        className="absolute bottom-1 right-1 grid h-9 w-9 place-items-center cursor-pointer rounded-full bg-white/90 text-gray-700 shadow ring-1 ring-gray-200 hover:bg-white"
                       >
-                        Change photo
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7h3l2-3h8l2 3h3v12H3V7z" />
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 17a4 4 0 100-8 4 4 0 000 8z" />
+                        </svg>
+                        <span className="sr-only">Upload avatar</span>
                       </label>
                       <input
                         id="avatar"
@@ -175,25 +375,60 @@ export default function MyProfile() {
                         accept="image/*"
                         className="hidden"
                         onChange={handleAvatar}
+                        aria-label="Change profile photo"
                       />
                     </>
                   )}
                 </div>
                 <div className="min-w-0">
                   {isEdit ? (
-                    <input
-                      className={`${inputBase} font-semibold`}
-                      value={draft.name}
-                      onChange={(e) => setDraft((p) => ({ ...p, name: e.target.value }))}
-                      placeholder="Your name"
-                    />
+                    <>
+                      <input
+                        className={`${inputBase} font-semibold`}
+                        value={draft.name}
+                        onChange={(e) => setDraft((p) => ({ ...p, name: e.target.value }))}
+                        placeholder="Your name"
+                        aria-invalid={!!errors.name}
+                        aria-describedby={errors.name ? "name-error" : undefined}
+                      />
+                      {errors.name && (
+                        <p id="name-error" className="mt-1 text-xs text-red-600">{errors.name}</p>
+                      )}
+                    </>
                   ) : (
-                    <h2 className="truncate text-xl font-semibold">{safeUser.name}</h2>
+                    <h2 className="truncate text-xl font-semibold">{safeUser.name || "Your name"}</h2>
                   )}
-                  <p className="truncate text-sm text-gray-600">{safeUser.email}</p>
+                  <div className="mt-1 flex items-center gap-2 text-sm text-gray-600">
+                    <span className="truncate">{safeUser.email || "your@email.com"}</span>
+                    <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-700">Primary</span>
+                    {!safeUser.isVerified && safeUser.email && (
+                      <button
+                        type="button"
+                        onClick={() => setVerifyOpen(true)}
+                        className="text-[var(--brand)] text-xs font-semibold hover:underline"
+                      >
+                        Verify
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
 
+              {/* Completion */}
+              <div className="mt-5">
+                <div className="flex items-center justify-between text-xs text-gray-500">
+                  <span>Profile completion</span>
+                  <span>{completion}%</span>
+                </div>
+                <div className="mt-1 h-2 w-full rounded-full bg-gray-100">
+                  <div
+                    className="h-2 rounded-full bg-[var(--brand)] transition-all"
+                    style={{ width: `${completion}%` }}
+                  />
+                </div>
+              </div>
+
+              {/* Actions */}
               <div className="mt-5 flex items-center gap-3">
                 {!isEdit ? (
                   <button
@@ -213,9 +448,11 @@ export default function MyProfile() {
                     </button>
                     <button
                       onClick={handleSave}
-                      disabled={saving}
-                      className={`flex-1 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm ring-1 ring-inset ring-[#545FF1]/20 transition hover:-translate-y-0.5 hover:shadow-md ${
-                        saving ? "bg-[#545FF1]/60 cursor-not-allowed" : "bg-[#545FF1]"
+                      disabled={!canSave}
+                      className={`flex-1 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm transition ${
+                        canSave
+                          ? "bg-[var(--brand)] hover:-translate-y-0.5 hover:shadow-md"
+                          : "bg-gray-300 cursor-not-allowed"
                       }`}
                     >
                       {saving ? "Saving..." : "Save"}
@@ -232,218 +469,329 @@ export default function MyProfile() {
 
           {/* Right: Details sections */}
           <main className="lg:col-span-8">
-            {/* Contact information */}
-            <section className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
-              <div className="flex items-center justify-between">
-                <h3 className="text-base font-semibold">Contact information</h3>
-                {!isEdit && (
-                  <button
-                    onClick={startEdit}
-                    className="rounded-full border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-900 hover:border-gray-300"
-                  >
-                    Edit
-                  </button>
+            {/* Loading skeleton */}
+            {loading ? (
+              <div className="space-y-6">
+                {[1, 2, 3].map((i) => (
+                  <section key={i} className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+                    <div className="h-5 w-40 animate-pulse rounded bg-gray-100" />
+                    <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <div className="h-10 w-full animate-pulse rounded bg-gray-100 sm:col-span-1" />
+                      <div className="h-10 w-full animate-pulse rounded bg-gray-100 sm:col-span-1" />
+                      <div className="h-10 w-full animate-pulse rounded bg-gray-100 sm:col-span-2" />
+                    </div>
+                  </section>
+                ))}
+              </div>
+            ) : (
+              <>
+                {/* Contact information */}
+                <section className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-base font-semibold">Contact information</h3>
+                    {!isEdit && (
+                      <button
+                        onClick={startEdit}
+                        className="rounded-full border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-900 hover:border-gray-300"
+                      >
+                        Edit
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    {/* Email */}
+                    <div className="sm:col-span-2">
+                      <label className="mb-1 block text-sm font-medium text-gray-900">Email</label>
+                      {isEdit ? (
+                        <input
+                          disabled
+                          className={`${inputBase} bg-gray-50`}
+                          value={draft.email}
+                        />
+                      ) : (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-gray-700">{safeUser.email}</p>
+                          {!safeUser.isVerified && safeUser.email && (
+                            <button
+                              type="button"
+                              onClick={() => setVerifyOpen(true)}
+                              className="rounded-full border border-gray-200 px-3 py-1 text-xs font-semibold text-gray-900 hover:border-gray-300"
+                            >
+                              Verify email
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      <p className="mt-1 text-xs text-gray-500">Email is linked to your account.</p>
+
+                      {/* Inline verification UI */}
+                      {verifyOpen && !safeUser.isVerified && safeUser.email && (
+                        <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
+                          <p className="text-sm text-gray-700">
+                            {resendCooldown > 0
+                              ? `Enter the code we sent to ${safeUser.email}.`
+                              : `Click "Send code" to receive a 6-digit OTP at ${safeUser.email}.`}
+                          </p>
+                          <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end">
+                            <div className="sm:flex-1">
+                              <label className="mb-1 block text-xs font-medium text-gray-700">OTP</label>
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                pattern="[0-9]*"
+                                maxLength={6}
+                                value={otp}
+                                onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                                placeholder="6-digit code"
+                                className={inputBase}
+                              />
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={sendVerificationOtp}
+                                disabled={sendingOtp || resendCooldown > 0}
+                                className={`rounded-lg border px-3 py-2 text-sm font-semibold transition ${
+                                  sendingOtp || resendCooldown > 0
+                                    ? "cursor-not-allowed border-gray-200 text-gray-400"
+                                    : "border-gray-200 text-gray-900 hover:border-gray-300"
+                                }`}
+                              >
+                                {sendingOtp
+                                  ? "Sending..."
+                                  : resendCooldown > 0
+                                  ? `Resend in ${resendCooldown}s`
+                                  : "Send code"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={verifyEmailOtp}
+                                disabled={verifyingOtp || otp.length !== 6}
+                                className={`rounded-lg px-3 py-2 text-sm font-semibold text-white transition ${
+                                  verifyingOtp || otp.length !== 6
+                                    ? "bg-[var(--brand)]/60 cursor-not-allowed"
+                                    : "bg-[var(--brand)] hover:-translate-y-0.5 hover:shadow-md"
+                                }`}
+                              >
+                                {verifyingOtp ? "Verifying..." : "Verify"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => { setVerifyOpen(false); setOtp(""); }}
+                                className="rounded-lg px-3 py-2 text-sm text-gray-600 hover:underline"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Phone */}
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-900">Phone</label>
+                      {isEdit ? (
+                        <>
+                          <input
+                            className={inputBase}
+                            value={draft.phone}
+                            onChange={(e) => setDraft((p) => ({ ...p, phone: e.target.value }))}
+                            placeholder="+91 XXXXX XXXXX"
+                            aria-invalid={!!errors.phone}
+                            aria-describedby={errors.phone ? "phone-error" : undefined}
+                          />
+                          {errors.phone && (
+                            <p id="phone-error" className="mt-1 text-xs text-red-600">{errors.phone}</p>
+                          )}
+                        </>
+                      ) : (
+                        <p className="text-gray-700">{safeUser.phone}</p>
+                      )}
+                    </div>
+
+                    {/* Address line 1 */}
+                    <div className="sm:col-span-1">
+                      <label className="mb-1 block text-sm font-medium text-gray-900">
+                        Address line 1
+                      </label>
+                      {isEdit ? (
+                        <input
+                          className={inputBase}
+                          value={draft.address.line1}
+                          onChange={(e) =>
+                            setDraft((p) => ({
+                              ...p,
+                              address: { ...p.address, line1: e.target.value },
+                            }))
+                          }
+                          placeholder="Street, area"
+                        />
+                      ) : (
+                        <p className="text-gray-700">{safeUser.address.line1}</p>
+                      )}
+                    </div>
+
+                    {/* Address line 2 */}
+                    <div className="sm:col-span-1">
+                      <label className="mb-1 block text-sm font-medium text-gray-900">
+                        Address line 2
+                      </label>
+                      {isEdit ? (
+                        <input
+                          className={inputBase}
+                          value={draft.address.line2}
+                          onChange={(e) =>
+                            setDraft((p) => ({
+                              ...p,
+                              address: { ...p.address, line2: e.target.value },
+                            }))
+                          }
+                          placeholder="City, State"
+                        />
+                      ) : (
+                        <p className="text-gray-700">{safeUser.address.line2}</p>
+                      )}
+                    </div>
+                  </div>
+                </section>
+
+                {/* Basic information */}
+                <section className="mt-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-base font-semibold">Basic information</h3>
+                    {!isEdit && (
+                      <button
+                        onClick={startEdit}
+                        className="rounded-full border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-900 hover:border-gray-300"
+                      >
+                        Edit
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    {/* Gender */}
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-900">Gender</label>
+                      {isEdit ? (
+                        <select
+                          className={inputBase}
+                          value={draft.gender}
+                          onChange={(e) => setDraft((p) => ({ ...p, gender: e.target.value }))}
+                        >
+                          <option value="">Select gender</option>
+                          <option>Male</option>
+                          <option>Female</option>
+                          <option>Non-binary</option>
+                          <option>Prefer not to say</option>
+                        </select>
+                      ) : (
+                        <p className="text-gray-700">{safeUser.gender}</p>
+                      )}
+                    </div>
+
+                    {/* DOB */}
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-900">Birth date</label>
+                      {isEdit ? (
+                        <>
+                          <input
+                            type="date"
+                            className={inputBase}
+                            value={draft.dob}
+                            onChange={(e) => setDraft((p) => ({ ...p, dob: e.target.value }))}
+                            aria-invalid={!!errors.dob}
+                            aria-describedby={errors.dob ? "dob-error" : undefined}
+                          />
+                          {errors.dob && (
+                            <p id="dob-error" className="mt-1 text-xs text-red-600">{errors.dob}</p>
+                          )}
+                        </>
+                      ) : (
+                        <p className="text-gray-700">{safeUser.dob}</p>
+                      )}
+                    </div>
+                  </div>
+                </section>
+
+                {/* Pet Information */}
+                <section className="mt-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-base font-semibold">Pet Information</h3>
+                    {!isEdit && (
+                      <button
+                        onClick={startEdit}
+                        className="rounded-full border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-900 hover:border-gray-300"
+                      >
+                        Edit
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    {/* PET */}
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-900">Pet</label>
+                      {isEdit ? (
+                        <input
+                          disabled
+                          className={`${inputBase} bg-gray-50`}
+                          value={draft.pet}
+                        />
+                      ) : (
+                        <p className="text-gray-700">{safeUser.pet}</p>
+                      )}
+                      <p className="mt-1 text-xs text-gray-500">Pet type cannot be changed.</p>
+                    </div>
+
+                    {/* ABOUT PET */}
+                    <div className="sm:col-span-2">
+                      <label className="mb-1 block text-sm font-medium text-gray-900">About Pet</label>
+                      {isEdit ? (
+                        <textarea
+                          value={draft.aboutPet}
+                          onChange={(e) => setDraft((p) => ({ ...p, aboutPet: e.target.value }))}
+                          className={`${inputBase} min-h-[100px]`}
+                          placeholder="Write about your pet..."
+                          rows={4}
+                        />
+                      ) : (
+                        <p className="whitespace-pre-line text-gray-700">{safeUser.aboutPet}</p>
+                      )}
+                    </div>
+                  </div>
+                </section>
+
+                {/* Sticky actions for mobile */}
+                {isEdit && (
+                  <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40 p-4 sm:hidden">
+                    <div className="pointer-events-auto mx-auto max-w-6xl rounded-xl border border-gray-200 bg-white/90 p-2 shadow-lg backdrop-blur">
+                      <div className="flex gap-3">
+                        <button
+                          onClick={cancelEdit}
+                          className="flex-1 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-900 transition hover:border-gray-300"
+                          disabled={saving}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={handleSave}
+                          className={`flex-1 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm transition ${
+                            canSave
+                              ? "bg-[var(--brand)] hover:-translate-y-0.5 hover:shadow-md"
+                              : "bg-gray-300 cursor-not-allowed"
+                          }`}
+                          disabled={!canSave}
+                        >
+                          {saving ? "Saving..." : "Save"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 )}
-              </div>
-
-              <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                {/* Email */}
-                <div>
-                  <label className="mb-1 block text-sm font-medium text-gray-900">Email</label>
-                  {isEdit ? (
-                    <input
-                      disabled
-                      className={`${inputBase} bg-gray-50`}
-                      value={draft.email}
-                    />
-                  ) : (
-                    <p className="text-gray-700">{safeUser.email}</p>
-                  )}
-                  <p className="mt-1 text-xs text-gray-500">Email is linked to your account.</p>
-                </div>
-
-                {/* Phone */}
-                <div>
-                  <label className="mb-1 block text-sm font-medium text-gray-900">Phone</label>
-                  {isEdit ? (
-                    <input
-                      className={inputBase}
-                      value={draft.phone}
-                      onChange={(e) => setDraft((p) => ({ ...p, phone: e.target.value }))}
-                      placeholder="+91 XXXXX XXXXX"
-                    />
-                  ) : (
-                    <p className="text-gray-700">{safeUser.phone}</p>
-                  )}
-                </div>
-
-                {/* Address line 1 */}
-                <div className="sm:col-span-1">
-                  <label className="mb-1 block text-sm font-medium text-gray-900">
-                    Address line 1
-                  </label>
-                  {isEdit ? (
-                    <input
-                      className={inputBase}
-                      value={draft.address.line1}
-                      onChange={(e) =>
-                        setDraft((p) => ({
-                          ...p,
-                          address: { ...p.address, line1: e.target.value },
-                        }))
-                      }
-                      placeholder="Street, area"
-                    />
-                  ) : (
-                    <p className="text-gray-700">{safeUser.address.line1}</p>
-                  )}
-                </div>
-
-                {/* Address line 2 */}
-                <div className="sm:col-span-1">
-                  <label className="mb-1 block text-sm font-medium text-gray-900">
-                    Address line 2
-                  </label>
-                  {isEdit ? (
-                    <input
-                      className={inputBase}
-                      value={draft.address.line2}
-                      onChange={(e) =>
-                        setDraft((p) => ({
-                          ...p,
-                          address: { ...p.address, line2: e.target.value },
-                        }))
-                      }
-                      placeholder="City, State"
-                    />
-                  ) : (
-                    <p className="text-gray-700">{safeUser.address.line2}</p>
-                  )}
-                </div>
-              </div>
-            </section>
-
-            {/* Basic information */}
-            <section className="mt-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
-              <div className="flex items-center justify-between">
-                <h3 className="text-base font-semibold">Basic information</h3>
-                {!isEdit && (
-                  <button
-                    onClick={startEdit}
-                    className="rounded-full border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-900 hover:border-gray-300"
-                  >
-                    Edit
-                  </button>
-                )}
-              </div>
-
-              <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                {/* Gender */}
-                <div>
-                  <label className="mb-1 block text-sm font-medium text-gray-900">Gender</label>
-                  {isEdit ? (
-                    <select
-                      className={inputBase}
-                      value={draft.gender}
-                      onChange={(e) => setDraft((p) => ({ ...p, gender: e.target.value }))}
-                    >
-                      <option value="">Select gender</option>
-                      <option>Male</option>
-                      <option>Female</option>
-                      <option>Non-binary</option>
-                      <option>Prefer not to say</option>
-                    </select>
-                  ) : (
-                    <p className="text-gray-700">{safeUser.gender}</p>
-                  )}
-                </div>
-
-                {/* DOB */}
-                <div>
-                  <label className="mb-1 block text-sm font-medium text-gray-900">Birth date</label>
-                  {isEdit ? (
-                    <input
-                      type="date"
-                      className={inputBase}
-                      value={draft.dob}
-                      onChange={(e) => setDraft((p) => ({ ...p, dob: e.target.value }))}
-                    />
-                  ) : (
-                    <p className="text-gray-700">{safeUser.dob}</p>
-                  )}
-                </div>
-              </div>
-            </section>
-
-            {/* Pet Information */}
-            <section className="mt-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
-              <div className="flex items-center justify-between">
-                <h3 className="text-base font-semibold">Pet Information</h3>
-                {!isEdit && (
-                  <button
-                    onClick={startEdit}
-                    className="rounded-full border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-900 hover:border-gray-300"
-                  >
-                    Edit
-                  </button>
-                )}
-              </div>
-
-              <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                {/* PET */}
-                <div>
-                  <label className="mb-1 block text-sm font-medium text-gray-900">Pet</label>
-                  {isEdit ? (
-                    <input
-                      disabled
-                      className={`${inputBase} bg-gray-50`}
-                      value={draft.pet}
-                    />
-                  ) : (
-                    <p className="text-gray-700">{safeUser.pet}</p>
-                  )}
-                  <p className="mt-1 text-xs text-gray-500">Pet type cannot be changed.</p>
-                </div>
-
-                {/* ABOUT PET */}
-                <div className="sm:col-span-2">
-                  <label className="mb-1 block text-sm font-medium text-gray-900">About Pet</label>
-                  {isEdit ? (
-                    <textarea
-                      value={draft.aboutPet}
-                      onChange={(e) => setDraft((p) => ({ ...p, aboutPet: e.target.value }))}
-                      className={`${inputBase} min-h-[100px]`}
-                      placeholder="Write about your pet..."
-                      rows={4}
-                    />
-                  ) : (
-                    <p className="text-gray-700 whitespace-pre-line">{safeUser.aboutPet}</p>
-                  )}
-                </div>
-              </div>
-            </section>
-
-
-            {/* Actions for mobile (duplicate for better UX) */}
-            {isEdit && (
-              <div className="mt-6 flex gap-3 sm:hidden">
-                <button
-                  onClick={cancelEdit}
-                  className="flex-1 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-900 transition hover:border-gray-300"
-                  disabled={saving}
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSave}
-                  className={`flex-1 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm ring-1 ring-inset ring-[#545FF1]/20 transition hover:-translate-y-0.5 hover:shadow-md ${
-                    saving ? "bg-[#545FF1]/60 cursor-not-allowed" : "bg-[#545FF1]"
-                  }`}
-                  disabled={saving}
-                >
-                  {saving ? "Saving..." : "Save"}
-                </button>
-              </div>
+              </>
             )}
           </main>
         </div>

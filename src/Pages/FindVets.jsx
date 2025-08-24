@@ -114,11 +114,44 @@ const SORT_OPTIONS = [
   { value: "name_desc", label: "Name (Z–A)" },
 ];
 
+/* ---------- NEW: StarRating (supports decimals 0–5) ---------- */
+function StarRating({ value = 0, size = 14 }) {
+  const clamped = Math.max(0, Math.min(5, Number(value) || 0));
+  const pad = (n) => Math.max(0, Math.min(1, n));
+
+  return (
+    <span className="inline-flex items-center" aria-label={`${clamped.toFixed(1)} out of 5`}>
+      {Array.from({ length: 5 }).map((_, i) => {
+        const filled = pad(clamped - i) * 100; // percent for this star
+        return (
+          <span key={i} className="relative mr-[2px] inline-block" style={{ width: size, height: size }}>
+            {/* Base (empty) star */}
+            <svg viewBox="0 0 20 20" className="absolute inset-0 text-gray-300" width={size} height={size} fill="currentColor" aria-hidden="true">
+              <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.803 2.037a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118L10 13.348l-2.384 1.726c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L3.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+            </svg>
+            {/* Filled portion */}
+            <span className="absolute inset-0 overflow-hidden" style={{ width: `${filled}%` }}>
+              <svg viewBox="0 0 20 20" className="text-amber-400" width={size} height={size} fill="currentColor" aria-hidden="true">
+                <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.803 2.037a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118L10 13.348l-2.384 1.726c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L3.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+              </svg>
+            </span>
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
 // Doctor card
 function DoctorCard({ doctor, onClick }) {
   const specs = getSpecialities(doctor);
   const feesDisplay = formatFees(doctor?.fees);
   const addressText = toAddressString(doctor?.address);
+
+  // NEW: rating support (0–5 including decimals)
+  const rawRating = doctor?.rating;
+  const ratingValueRaw = numberFrom(rawRating, null);
+  const ratingValue = ratingValueRaw == null ? null : Math.max(0, Math.min(5, ratingValueRaw));
 
   return (
     <div
@@ -154,6 +187,14 @@ function DoctorCard({ doctor, onClick }) {
             </span>
           )}
         </div>
+
+        {/* NEW: Rating row (only if rating present) */}
+        {ratingValue != null && (
+          <div className="flex items-center gap-2">
+            <StarRating value={ratingValue} />
+            <span className="text-xs font-medium text-gray-700">{ratingValue.toFixed(1)}</span>
+          </div>
+        )}
 
         {(doctor?.clinicName || addressText) && (
           <div className="text-sm text-gray-600">
@@ -208,10 +249,7 @@ function DoctorCard({ doctor, onClick }) {
           Book
         </button>
       </div>
-
     </div>
-
-      
   );
 }
 
